@@ -1,0 +1,37 @@
+name: C++17
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  conformance:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=17 -DCMAKE_CXX_STANDARD_REQUIRED=ON -DCMAKE_CXX_EXTENSIONS=OFF -DMODERN_OSC_BUILD_TESTS=ON -DMODERN_OSC_BUILD_EXAMPLES=ON
+      - name: Build
+        run: cmake --build build --config Release --parallel
+      - name: Run protocol and UDP tests
+        run: ctest --test-dir build -C Release --output-on-failure
+      - name: Install
+        run: cmake --install build --config Release --prefix "${{ github.workspace }}/stage"
+      - name: Build and run installed consumer
+        run: |
+          cmake -S tests/consumer -B installed-consumer "-DCMAKE_PREFIX_PATH=${{ github.workspace }}/stage" -DCMAKE_CXX_STANDARD=17 -DCMAKE_CXX_STANDARD_REQUIRED=ON
+          cmake --build installed-consumer --config Release --parallel
+          ctest --test-dir installed-consumer -C Release --output-on-failure
+      - name: Build and run core-only source consumer
+        run: |
+          cmake -S tests/consumer -B source-consumer "-DMODERN_OSC_SOURCE=${{ github.workspace }}" -DCMAKE_CXX_STANDARD=17 -DCMAKE_CXX_STANDARD_REQUIRED=ON
+          cmake --build source-consumer --config Release --parallel
+          ctest --test-dir source-consumer -C Release --output-on-failure

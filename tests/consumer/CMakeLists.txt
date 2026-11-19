@@ -1,0 +1,20 @@
+cmake_minimum_required(VERSION 3.16)
+project(modern_osc_consumer LANGUAGES CXX)
+
+if(MODERN_OSC_SOURCE)
+    set(MODERN_OSC_BUILD_UDP OFF CACHE BOOL "" FORCE)
+    add_subdirectory("${MODERN_OSC_SOURCE}" modern_osc)
+else()
+    find_package(modern_osc 0.1 CONFIG REQUIRED COMPONENTS core udp)
+endif()
+
+add_executable(consumer main.cpp)
+if(TARGET modern_osc::udp)
+    target_link_libraries(consumer PRIVATE modern_osc::udp)
+    target_compile_definitions(consumer PRIVATE MODERN_OSC_TEST_UDP)
+else()
+    target_link_libraries(consumer PRIVATE modern_osc::core)
+endif()
+
+enable_testing()
+add_test(NAME consume_modern_osc COMMAND consumer)

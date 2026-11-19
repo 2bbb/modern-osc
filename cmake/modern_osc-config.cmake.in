@@ -1,0 +1,8 @@
+@PACKAGE_INIT@
+
+include("${CMAKE_CURRENT_LIST_DIR}/modern_osc-targets.cmake")
+set(modern_osc_core_FOUND TRUE)
+if(TARGET modern_osc::udp)
+    set(modern_osc_udp_FOUND TRUE)
+endif()
+check_required_components(modern_osc)
