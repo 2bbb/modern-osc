@@ -1,6 +1,7 @@
 #pragma once
 
 #include "modern_osc/pattern.hpp"
+#include "modern_osc/subscription.hpp"
 
 #include <algorithm>
 #include <functional>
@@ -26,6 +27,7 @@ struct DispatchReport {
     std::size_t calls = 0;
     std::size_t unmatched = 0;
     std::size_t opaque = 0;
+    std::size_t mismatched = 0;
 };
 
 // Share a dispatcher on one serial execution context. Context and message
@@ -43,22 +45,39 @@ public:
     Dispatcher& operator=(const Dispatcher&) = delete;
 
     Result<HandlerId> add(std::string_view address, Handler handler) {
-        if (delivering_) return Error{ErrorCode::busy};
-        if (address.size() > limits_.pattern.bytes || handler_count_ >= limits_.handlers ||
-            next_id_ == (std::numeric_limits<HandlerId>::max)())
-            return Error{ErrorCode::size_limit};
-        if (!is_address(address)) return Error{ErrorCode::invalid_address};
-        if (!handler) return Error{ErrorCode::invalid_argument};
-        const auto existing = entries_.find(address);
-        if (existing != entries_.end()) {
-            existing->second.push_back({next_id_, std::move(handler)});
-        } else {
-            std::vector<Entry> group;
-            group.push_back({next_id_, std::move(handler)});
-            entries_.emplace(std::string(address), std::move(group));
+        MatchingHandler wrapped;
+        if (handler) {
+            wrapped = [fn = std::move(handler)](const MessageView& message, const Context& context) {
+                fn(message, context);
+                return true;
+            };
         }
-        ++handler_count_;
-        return next_id_++;
+        return add_handler(address, std::move(wrapped));
+    }
+
+    template<class... Outputs>
+    Result<HandlerId> subscribe(std::string_view address, Outputs&&... outputs) {
+        static_assert(sizeof...(Outputs) > 0, "subscribe needs at least one output");
+        static_assert(((!std::is_same_v<std::decay_t<Outputs>, Nil> &&
+                        !std::is_same_v<std::decay_t<Outputs>, Impulse>) && ...),
+                      "Subscribe to Nil or Impulse with subscribe_notify");
+        return subscribe_notify(address, [](const Context&) {}, std::forward<Outputs>(outputs)...);
+    }
+
+    // Destinations must stay valid until remove() or destruction of this dispatcher.
+    template<class... Outputs>
+    Result<HandlerId> subscribe_notify(std::string_view address,
+                                       std::function<void(const Context&)> notify,
+                                       Outputs&&... outputs) {
+        if (!notify) return add_handler(address, {});
+        auto slots = std::make_tuple(detail::bind_output(std::forward<Outputs>(outputs))...);
+        return add_handler(address, [slots, notify = std::move(notify)]
+                           (const MessageView& message, const Context& context) {
+            if (!detail::update_outputs(message.arguments, slots, std::index_sequence_for<Outputs...>{}))
+                return false;
+            notify(context);
+            return true;
+        });
     }
 
     Result<bool> remove(HandlerId id) {
@@ -93,14 +112,35 @@ public:
     }
 
 private:
+    using MatchingHandler = std::function<bool(const MessageView&, const Context&)>;
+
+    Result<HandlerId> add_handler(std::string_view address, MatchingHandler handler) {
+        if (delivering_) return Error{ErrorCode::busy};
+        if (address.size() > limits_.pattern.bytes || handler_count_ >= limits_.handlers ||
+            next_id_ == (std::numeric_limits<HandlerId>::max)())
+            return Error{ErrorCode::size_limit};
+        if (!is_address(address)) return Error{ErrorCode::invalid_address};
+        if (!handler) return Error{ErrorCode::invalid_argument};
+        const auto existing = entries_.find(address);
+        if (existing != entries_.end()) {
+            existing->second.push_back({next_id_, std::move(handler)});
+        } else {
+            std::vector<Entry> group;
+            group.push_back({next_id_, std::move(handler)});
+            entries_.emplace(std::string(address), std::move(group));
+        }
+        ++handler_count_;
+        return next_id_++;
+    }
+
     struct Entry {
         HandlerId id;
-        Handler handler;
+        MatchingHandler handler;
     };
 
     struct Call {
         const MessageView* message;
-        const Handler* handler;
+        const MatchingHandler* handler;
     };
 
     struct Plan {
@@ -181,8 +221,10 @@ private:
         };
         delivering_ = true;
         ResetFlag reset{delivering_};
-        for (const auto& call : plan.calls) (*call.handler)(*call.message, context);
-        plan.report.calls = plan.calls.size();
+        for (const auto& call : plan.calls) {
+            if ((*call.handler)(*call.message, context)) ++plan.report.calls;
+            else ++plan.report.mismatched;
+        }
         return plan.report;
     }
 };

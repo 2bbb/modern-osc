@@ -63,6 +63,27 @@ auto on_datagram(Dispatcher<Peer>& dispatcher, ByteView bytes, const Peer& sende
 
 UDPの切り詰めを通知しないAPIでは、データグラム全体が収まる経路を用意します。通常のIPv4 UDPのペイロードなら65,507バイトです。 [UDP利用ガイドライン](https://www.rfc-editor.org/rfc/rfc8085.html)
 
+## 変数への購読
+
+具体アドレスに書き込み可能なメンバーを登録する。次の例は整数、タグ付きの浮動小数点配列1個、最後の浮動小数点値を受ける。levels が2要素なら型タグは `,i[ff]f`。
+
+```cpp
+struct Voice {
+    std::int32_t id{};
+    std::vector<float> levels;
+    float gain{};
+    modern_osc::Dispatcher<> osc;
+
+    auto listen() {
+        return osc.subscribe("/voice", id, modern_osc::array(levels), gain);
+    }
+};
+```
+
+裸の vector は**末尾のフラットな引数をすべて**消費する。`osc.subscribe("/levels", levels)` は `,fff` も引数0個も受け取れる。`array(levels)` はその位置で**タグ付き配列1個**を消費し、空配列 `[]` も受け取れる。タグ付き配列は一つの購読に複数置ける。各要素は型の完全一致で読み取る。
+
+同じ値の連続到着も検知するには `subscribe_notify(address, callback, outputs...)` を使う。全出力を代入した直後に `callback(const Context&)` が呼ばれる。出力を省略した場合は引数0個のメッセージに一致する。型や個数の不一致はその購読の出力をすべて保ち、`DispatchReport::mismatched` を1増やして次の登録に進む。戻り値の ID で `remove(id)` できる。参照先は解除または Dispatcher 破棄まで生存させる。値の読み取りは配送と同じスレッドで行い、別スレッドで使う場合は同期する。
+
 ## 開発
 
 `MODERN_OSC_BUILD_FUZZER=ON` にすると、ClangのAddressSanitizer・UndefinedBehaviorSanitizer付きで、シード入力を再現可能に変異させる実行ファイルをビルドできます。対応範囲、設計判断、既存ライブラリとの比較、検証範囲は [PLAN.md](PLAN.md) にあります。

@@ -63,6 +63,27 @@ The default dispatch budget is one million evaluation steps per packet. Concrete
 
 For APIs that do not signal UDP truncation, use a receive path sized for the whole datagram. For ordinary IPv4 UDP that means at least 65,507 payload bytes. [UDP usage guidelines](https://www.rfc-editor.org/rfc/rfc8085.html)
 
+## Subscribe to values
+
+Bind writable members to a concrete address. This example accepts an integer, one tagged array of floats, and a final float (`,i[ff]f` for two levels).
+
+```cpp
+struct Voice {
+    std::int32_t id{};
+    std::vector<float> levels;
+    float gain{};
+    modern_osc::Dispatcher<> osc;
+
+    auto listen() {
+        return osc.subscribe("/voice", id, modern_osc::array(levels), gain);
+    }
+};
+```
+
+A bare vector consumes **all remaining flat arguments** and must come last. For example, `osc.subscribe("/levels", levels)` accepts `,fff` or an empty argument list. `array(levels)` consumes **one tagged array** at any position, including `[]`. Several tagged arrays can appear in one subscription. Element types must match exactly.
+
+Use `subscribe_notify(address, callback, outputs...)` to receive every matching arrival, including repeated values. The callback takes `const Context&` and runs after all outputs are assigned. With no outputs it matches an empty message. A mismatch leaves all outputs for that subscription intact and increments `DispatchReport::mismatched`. The dispatcher continues with the next registration. Retain the returned ID for `remove(id)`. Keep destinations alive until removal or dispatcher destruction. Read the values on the dispatch thread or synchronize access across threads.
+
 ## Development
 
 `MODERN_OSC_BUILD_FUZZER=ON` builds a reproducible seed-mutation executable using Clang with AddressSanitizer and UndefinedBehaviorSanitizer. The [design plan](PLAN.md) lists support, trade-offs, library comparisons, and the verification scope.
