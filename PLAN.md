@@ -101,3 +101,25 @@ Claude Desktopは13:01 JSTに、配送先一覧を事前に確定し、予算超
 - macOSでClangのASan/UBSan付きシード変異を30,000回実行した。インストール済み `find_package` とコアのみの `add_subdirectory` は利用側プロジェクトから実行した。
 - SuperCollider 3.14.1で、`i`・`d`・UTF-8を含む2件のBundleと返信順を実測した。Pure Data 0.56.2で整数と文字列のMessageを双方向に交換した。
 - Claude Desktopは13:19 JSTに、索引とWindows SDKのマクロ対策を再レビューして実装OKと判定した。Windows x64向けMinGWクロスビルドは成功。MSVCとWindows上のUDP実行は、[CI](.github/workflows/ci.yml) のWindowsジョブで確認する。
+
+## 8. 型付き購読と配列
+
+`Dispatcher<Context>::subscribe(address, outputs...)` を追加する。変数を登録し、該当するMessageを受けるたびに値を置き換える。返り値は既存の `Result<HandlerId>` で、解除には `remove(id)` を使う。コーデックは常に配列境界を保持する。購読ごとに引数の形を指定できるので、ソケット全体のモード切り替えは不要。フラットな引数列を変数へ受ける使い方は [ofxPubSubOsc の公開例](https://qiita.com/2bbb/items/a77007dd6733bafc270b)、配列の後ろに別の引数を置く用途は [SuperCollider の Node Messaging](https://doc.sccode.org/Guides/NodeMessaging.html) を参照。
+
+| 購読先（API例） | 消費するOSC引数 |
+| --- | --- |
+| `subscribe("/levels", xs)` | 裸の `std::vector<T>` は末尾に1回だけ置け、その位置から残り全部を消費する。`,fff` は3要素、引数0個なら空になる |
+| `subscribe("/track", id, xs)` | 先頭のスカラーで1引数を消費し、残りを `xs` に入れる |
+| `subscribe("/curve", array(xs), array(ys))` | 各ラッパーでタグ付き配列をちょうど1個消費する。`,[][ff]` は空と2要素。フラットな値から境界を推定しない |
+| `subscribe("/voice", id, array(xs), gain)` | `,i[ff]f` を順に消費する。タグ付き配列を途中に置ける |
+
+- subscribe は1個以上の出力を受ける。スカラーとvector要素はタグに厳密に対応させる。i/h は int32_t/int64_t、f/d は float/double または既存のビット保持型、s は所有する std::string、S/b は所有する Symbol/Blob、T/F は bool、t/c/r/m/N/I は既存の専用型。今回の vector は標準アロケータの1次元で、異種・入れ子の受信には既存の MessageView を利用できる。裸のvectorはタグ付き配列を自動展開しない。
+- 出力は呼び出し側所有の可変lvalue。array(xs) は一時ラッパーを渡せる。参照先は解除またはDispatcher破棄まで有効に保ち、別の購読先への代入で無効になる参照を登録しない。非末尾の裸vector・読み取り専用値・未対応型はコンパイル時に診断する。
+- 引数不足・余剰・型違いはその購読1件の不一致。全出力を一時所有値に読み切ってから確定する。他の購読、通常のハンドラ、Bundleの後続Messageは続行する。DispatchReport に mismatched を追加し、calls は通常の呼び出しと成功した購読の合計、unmatched はアドレスの該当登録が0件のMessage数とする。配送の予算は型不一致も含む全候補に対して従来どおり事前に適用する。例外の伝播と再入時のbusyは既存の配送に従う。
+- 受信バッファを再利用しても束縛した値は保持される。検証では公開API経由でフラットとタグ付きの違い、空と欠落、2配列と後続値、途中不一致時の出力保全、混在登録の集計、解除と受信バッファからの独立性を確認する。送信側APIとパスの拡張は別の変更として扱う。
+
+### 到着通知と変換の方針
+
+同じ値の連続到着も扱うため、今回の範囲に `subscribe_notify(address, callback, outputs...)` を含める。出力をすべて確定した直後に `callback(const Context&)` を毎回1回呼ぶ。型不一致時は通知0回。出力なしで登録した場合は引数0個のMessageにだけ一致する。スカラーの Nil と Impulse はこの通知付き形式で購読する（配列内は要素数にも意味がある）。通常の subscribe と同じ読取・確定処理を使う。出力はdispatchを呼んだスレッドで更新される。READMEの例ではメンバーに保持し、同じスレッドで値を読む。別スレッドに渡す場合は所有値と同期手段を使う。vector<bool> と s/S の区別も検証する。
+
+数値変換は別途実装する拡張として `numeric(x)` と `truthy(b)` を予約する。今回の受信は完全一致を既定とする。numeric はスカラーの i/h/f/d と C++ の int32_t/int64_t/float/double の間で明示した変換を行う。浮動小数から整数へは0方向への切り捨て後に範囲を検証し、浮動小数への変換は有限かつ範囲内に限り、対象型の精度への丸めを許す。truthy は T/F と有限な数値を受け、±0 を false、非0を true とする。両方とも NaN、無限大、範囲外は不一致。配列要素への暗黙の数値変換は行わない。
